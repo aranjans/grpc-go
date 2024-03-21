@@ -330,7 +330,6 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts
 		localAddr:             conn.LocalAddr(),
 		authInfo:              authInfo,
 		readerDone:            make(chan struct{}),
-		writerDone:            make(chan struct{}),
 		goAway:                make(chan struct{}),
 		framer:                newFramer(conn, writeBufSize, readBufSize, opts.SharedWriteBuffer, maxHeaderListSize),
 		fc:                    &trInFlow{limit: uint32(icwz)},
@@ -452,6 +451,7 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts
 	}
 	go func() {
 		t.loopy = newLoopyWriter(clientSide, t.framer, t.controlBuf, t.bdpEst, t.conn, t.logger)
+		t.writerDone = make(chan struct{})
 		t.loopy.ssGoAwayHandler = t.outgoingGoAwayHandler
 		if err := t.loopy.run(); !isIOError(err) {
 			// Immediately close the connection, as the loopy writer returns
@@ -1006,7 +1006,9 @@ func (t *http2Client) Close(err error) {
 	// ever starts to take in an HTTP/2 error code the peer will be able to get more information about the reason
 	// behind the connection close.
 	t.controlBuf.put(&goAway{code: http2.ErrCodeNo, debugData: []byte(fmt.Sprintf("client shutdown with: %v", err)), closeConnErr: err})
-	<-t.writerDone
+	if t.writerDone != nil {
+		<-t.writerDone
+	}
 	t.cancel()
 	t.conn.Close()
 	channelz.RemoveEntry(t.channelz.ID)
