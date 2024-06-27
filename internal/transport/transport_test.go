@@ -2656,6 +2656,24 @@ func TestConnectionError_Unwrap(t *testing.T) {
 	}
 }
 
+type hangingConn struct {
+	net.Conn
+}
+
+func (hc *hangingConn) Read(b []byte) (n int, err error) {
+	n, err = hc.Conn.Read(b)
+	fmt.Printf("Got read data as : %v, %v\n", string(b), n)
+	if n == 0 { // ErrorCode 0x0 for goAwayFrame, checkout http2Client.Close() where we are putting the goAwayFrame in control buffer.
+		time.Sleep(time.Hour)
+	}
+	return n, err
+}
+
+func (hc *hangingConn) Write(b []byte) (n int, err error) {
+	n, err = hc.Conn.Write(b)
+	return n, err
+}
+
 // Test that in the event of a graceful client transport shutdown, i.e.,
 // clientTransport.Close(), client sends a goaway to the server with the correct
 // error code and debug data.
@@ -2725,7 +2743,15 @@ func (s) TestClientSendsAGoAwayFrame(t *testing.T) {
 		}
 	}()
 
-	ct, err := NewClientTransport(ctx, context.Background(), resolver.Address{Addr: lis.Addr().String()}, ConnectOptions{}, func(GoAwayReason) {})
+	ct, err := NewClientTransport(ctx, context.Background(), resolver.Address{Addr: lis.Addr().String()}, ConnectOptions{
+		Dialer: func(ctx context.Context, s2 string) (net.Conn, error) {
+			conn, err := net.Dial("tcp", lis.Addr().String())
+			if err != nil {
+				return nil, err
+			}
+			return &hangingConn{Conn: conn}, nil
+		},
+	}, func(GoAwayReason) {})
 	if err != nil {
 		t.Fatalf("Error while creating client transport: %v", err)
 	}
@@ -2735,10 +2761,9 @@ func (s) TestClientSendsAGoAwayFrame(t *testing.T) {
 	}
 	// Wait until server receives the headers and settings frame as part of greet.
 	<-greetDone
-	t.Logf("Adding 25s delay post the RPC call and before client conn close.")
-	time.Sleep(25 * time.Second)
+	t.Logf("Adding 25s delay post the RPC call and before client conn close. timestamp: %v", time.Now())
 	ct.Close(errors.New("manually closed by client"))
-	t.Logf("Closed the client connection")
+	t.Logf("Closed the client connection, timestamp: %v", time.Now())
 	select {
 	case err := <-errorCh:
 		if err != nil {
