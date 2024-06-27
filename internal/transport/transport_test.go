@@ -2735,6 +2735,8 @@ func (s) TestClientSendsAGoAwayFrame(t *testing.T) {
 	}
 	// Wait until server receives the headers and settings frame as part of greet.
 	<-greetDone
+	t.Logf("Adding 25s delay post the RPC call and before client conn close.")
+	time.Sleep(25 * time.Second)
 	ct.Close(errors.New("manually closed by client"))
 	t.Logf("Closed the client connection")
 	select {

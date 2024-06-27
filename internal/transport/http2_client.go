@@ -983,6 +983,7 @@ func (t *http2Client) closeStream(s *Stream, err error, rst bool, rstCode http2.
 // only once on a transport. Once it is called, the transport should not be
 // accessed anymore.
 func (t *http2Client) Close(err error) {
+	t.conn.SetWriteDeadline(time.Now().Add(time.Second * 20))
 	t.mu.Lock()
 	// Make sure we only close once.
 	if t.state == closing {
@@ -1016,7 +1017,6 @@ func (t *http2Client) Close(err error) {
 	// Append info about previous goaways if there were any, since this may be important
 	// for understanding the root cause for this connection to be closed.
 	_, goAwayDebugMessage := t.GetGoAwayReason()
-
 	var st *status.Status
 	if len(goAwayDebugMessage) > 0 {
 		st = status.Newf(codes.Unavailable, "closing transport due to: %v, received prior goaway: %v", err, goAwayDebugMessage)
