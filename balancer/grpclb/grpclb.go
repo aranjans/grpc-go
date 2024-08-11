@@ -58,6 +58,13 @@ const (
 var errServerTerminatedConnection = errors.New("grpclb: failed to recv server list: server terminated connection")
 var logger = grpclog.Component("grpclb")
 
+var (
+	// Below function is no-op in actual code, but can be overridden in
+	// tests to give tests visibility into exactly when certain events happen.
+	newPickerUpdated     = func() {}
+	clientConnUpdateHook = func() {}
+)
+
 func convertDuration(d *durationpb.Duration) time.Duration {
 	if d == nil {
 		return 0
@@ -463,6 +470,8 @@ func (lb *lbBalancer) ResolverError(error) {
 }
 
 func (lb *lbBalancer) UpdateClientConnState(ccs balancer.ClientConnState) error {
+	defer clientConnUpdateHook()
+
 	if lb.logger.V(2) {
 		lb.logger.Infof("UpdateClientConnState: %s", pretty.ToJSON(ccs))
 	}
@@ -516,6 +525,7 @@ func (lb *lbBalancer) UpdateClientConnState(ccs balancer.ClientConnState) error 
 		lb.refreshSubConns(lb.resolvedBackendAddrs, true, lb.usePickFirst)
 	}
 	lb.mu.Unlock()
+	newPickerUpdated()
 	return nil
 }
 
