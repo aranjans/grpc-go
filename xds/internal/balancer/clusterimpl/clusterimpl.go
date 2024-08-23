@@ -56,6 +56,9 @@ const (
 var (
 	connectedAddress  = internal.ConnectedAddress.(func(balancer.SubConnState) resolver.Address)
 	errBalancerClosed = fmt.Errorf("%s LB policy is closed", Name)
+	// Below function is no-op in actual code, but can be overridden in
+	// tests to give tests visibility into exactly when certain events happen.
+	clientConnUpdateHook = func() {}
 )
 
 func init() {
@@ -101,6 +104,12 @@ type clusterImplBalancer struct {
 	edsServiceName   string
 	lrsServer        *bootstrap.ServerConfig
 	loadWrapper      *loadstore.Wrapper
+
+	// Set during UpdateClientConnState when pushing updates to child policies.
+	// Prevents state updates from child policies causing new pickers to be sent
+	// up the channel. Cleared after all child policies have processed the
+	// updates sent to them, after which a new picker is sent up the channel.
+	inhibitPickerUpdates bool
 
 	clusterNameMu sync.Mutex
 	clusterName   string
@@ -231,13 +240,25 @@ func (b *clusterImplBalancer) updateClientConnState(s balancer.ClientConnState) 
 		return err
 	}
 
+	b.inhibitPickerUpdates = true
 	if b.config == nil || b.config.ChildPolicy.Name != newConfig.ChildPolicy.Name {
-		if err := b.child.SwitchTo(bb); err != nil {
+		strCfg, err := newConfig.ChildPolicy.MarshalJSON()
+		if err != nil {
+			return fmt.Errorf("error marshaling config: %v", err)
+		}
+		r := json.RawMessage(strCfg)
+		sc, err := gracefulswitch.ParseConfig(r)
+		if err != nil {
+			return fmt.Errorf("error parsing child config: %v", err)
+		}
+		if err := b.child.UpdateClientConnState(balancer.ClientConnState{
+			ResolverState:  s.ResolverState,
+			BalancerConfig: sc,
+		}); err != nil {
 			return fmt.Errorf("error switching to child of type %q: %v", newConfig.ChildPolicy.Name, err)
 		}
 	}
 	b.config = newConfig
-
 	b.telemetryLabels = newConfig.TelemetryLabels
 	dc := b.handleDropAndRequestCount(newConfig)
 	if dc != nil && b.childState.Picker != nil {
@@ -259,6 +280,8 @@ func (b *clusterImplBalancer) UpdateClientConnState(s balancer.ClientConnState) 
 	errCh := make(chan error, 1)
 	callback := func(context.Context) {
 		errCh <- b.updateClientConnState(s)
+		b.inhibitPickerUpdates = false
+		clientConnUpdateHook()
 	}
 	onFailure := func() {
 		// The call to Schedule returns false *only* if the serializer has been
@@ -322,14 +345,16 @@ func (b *clusterImplBalancer) ExitIdle() {
 func (b *clusterImplBalancer) UpdateState(state balancer.State) {
 	b.serializer.TrySchedule(func(context.Context) {
 		b.childState = state
-		b.ClientConn.UpdateState(balancer.State{
-			ConnectivityState: b.childState.ConnectivityState,
-			Picker: b.newPicker(&dropConfigs{
-				drops:           b.drops,
-				requestCounter:  b.requestCounter,
-				requestCountMax: b.requestCountMax,
-			}),
-		})
+		if !b.inhibitPickerUpdates {
+			b.ClientConn.UpdateState(balancer.State{
+				ConnectivityState: b.childState.ConnectivityState,
+				Picker: b.newPicker(&dropConfigs{
+					drops:           b.drops,
+					requestCounter:  b.requestCounter,
+					requestCountMax: b.requestCountMax,
+				}),
+			})
+		}
 	})
 }
 
