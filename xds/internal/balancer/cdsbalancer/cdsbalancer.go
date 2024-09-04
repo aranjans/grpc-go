@@ -20,6 +20,7 @@ package cdsbalancer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"unsafe"
@@ -168,9 +169,10 @@ type cdsBalancer struct {
 	serializer       *grpcsync.CallbackSerializer // Serializes updates from gRPC and xDS client.
 	serializerCancel context.CancelFunc           // Stops the above serializer.
 	childLB          balancer.Balancer            // Child policy, built upon resolution of the cluster graph.
-	xdsClient        xdsclient.XDSClient          // xDS client to watch Cluster resources.
-	watchers         map[string]*watcherState     // Set of watchers and associated state, keyed by cluster name.
-	lbCfg            *lbConfig                    // Current load balancing configuration.
+	childCfgUpdated  chan struct{}
+	xdsClient        xdsclient.XDSClient      // xDS client to watch Cluster resources.
+	watchers         map[string]*watcherState // Set of watchers and associated state, keyed by cluster name.
+	lbCfg            *lbConfig                // Current load balancing configuration.
 
 	// The certificate providers are cached here to that they can be closed when
 	// a new provider is to be created.
@@ -327,7 +329,8 @@ func (b *cdsBalancer) UpdateClientConnState(state balancer.ClientConnState) erro
 		errCh <- errBalancerClosed
 	}
 	b.serializer.ScheduleOr(callback, onFailure)
-	return <-errCh
+	err := <-errCh
+	return err
 }
 
 // ResolverError handles errors reported by the xdsResolver.
@@ -483,6 +486,13 @@ func (b *cdsBalancer) onClusterUpdate(name string, update xdsresource.ClusterUpd
 		if err := b.childLB.UpdateClientConnState(ccState); err != nil {
 			b.logger.Errorf("Encountered error when sending config {%+v} to child policy: %v", ccState, err)
 		}
+	} else {
+		// Cluster graph resolution is incomplete.
+		b.ccw.UpdateState(balancer.State{
+			ConnectivityState: connectivity.Connecting,
+			Picker:            base.NewErrPicker(errors.New("cluster graph resolution is incomplete")),
+		})
+		return
 	}
 	// We no longer need the clusters that we did not see in this iteration of
 	// generateDMsForCluster().
@@ -494,6 +504,9 @@ func (b *cdsBalancer) onClusterUpdate(name string, update xdsresource.ClusterUpd
 		state.cancelWatch()
 		delete(b.watchers, cluster)
 	}
+	b.logger.Infof("Updating the child policy: cluster_resolver.")
+	b.childCfgUpdated = make(chan struct{}, 1)
+	b.childCfgUpdated <- struct{}{}
 }
 
 // Handles an error Cluster update from the xDS client. Propagates the error
