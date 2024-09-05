@@ -330,6 +330,7 @@ func (b *cdsBalancer) UpdateClientConnState(state balancer.ClientConnState) erro
 	}
 	b.serializer.ScheduleOr(callback, onFailure)
 	err := <-errCh
+	<-b.childCfgUpdated
 	return err
 }
 
