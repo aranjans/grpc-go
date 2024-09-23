@@ -1009,23 +1009,6 @@ func (t *http2Client) Close(err error) {
 		t.kpDormancyCond.Signal()
 	}
 	t.mu.Unlock()
-
-	// Per HTTP/2 spec, a GOAWAY frame must be sent before closing the
-	// connection. See https://httpwg.org/specs/rfc7540.html#GOAWAY. It
-	// also waits for loopyWriter to be closed with a timer to avoid the
-	// long blocking in case the connection is blackholed, i.e. TCP is
-	// just stuck.
-	t.controlBuf.put(&goAway{code: http2.ErrCodeNo, debugData: []byte("client transport shutdown"), closeConn: err})
-	timer := time.NewTimer(goAwayLoopyWriterTimeout)
-	defer timer.Stop()
-	select {
-	case <-t.writerDone: // success
-	case <-timer.C:
-		t.logger.Infof("Failed to write a GOAWAY frame as part of connection close after %s. Giving up and closing the transport.", goAwayLoopyWriterTimeout)
-	}
-	t.cancel()
-	t.conn.Close()
-	channelz.RemoveEntry(t.channelz.ID)
 	// Append info about previous goaways if there were any, since this may be important
 	// for understanding the root cause for this connection to be closed.
 	_, goAwayDebugMessage := t.GetGoAwayReason()
@@ -1037,6 +1020,14 @@ func (t *http2Client) Close(err error) {
 	} else {
 		st = status.New(codes.Unavailable, err.Error())
 	}
+
+	// Per HTTP/2 spec, a GOAWAY frame must be sent before closing the
+	// connection. See https://httpwg.org/specs/rfc7540.html#GOAWAY.
+	t.controlBuf.put(&goAway{code: http2.ErrCodeNo, debugData: []byte("client transport shutdown"), closeConn: err})
+	<-t.writerDone
+	t.cancel()
+	t.conn.Close()
+	channelz.RemoveEntry(t.channelz.ID)
 
 	// Notify all active streams.
 	for _, s := range streams {
