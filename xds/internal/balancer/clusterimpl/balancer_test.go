@@ -943,6 +943,72 @@ func (s) TestFailedToParseChildPolicyConfig(t *testing.T) {
 	}
 }
 
+// Test verify that the case picker is updated synchronously on receipt of
+// configuration update.
+func (s) TestPickerUpdatedSynchronouslyOnConfigUpdate(t *testing.T) {
+	// Override the newPickerUpdated to be notified that picker was updated.
+	pickerUpdated := make(chan struct{}, 1)
+	origNewPickerUpdated := newPickerUpdated
+	newPickerUpdated = func() {
+		t.Logf("Sending picker update.")
+		pickerUpdated <- struct{}{}
+	}
+	defer func() { newPickerUpdated = origNewPickerUpdated }()
+
+	// Override the newConfigHook to ensure picker was updated.
+	clientConnUpdateDone := make(chan struct{}, 1)
+	origClientConnUpdateHook := clientConnUpdateHook
+	clientConnUpdateHook = func() {
+		// Verify that picker was updated before the completion of
+		// client conn update.
+		<-pickerUpdated
+		clientConnUpdateDone <- struct{}{}
+	}
+	defer func() { clientConnUpdateHook = origClientConnUpdateHook }()
+
+	defer xdsclient.ClearCounterForTesting(testClusterName, testServiceName)
+	xdsC := fakeclient.NewClient()
+
+	builder := balancer.Get(Name)
+	cc := testutils.NewBalancerClientConn(t)
+	b := builder.Build(cc, balancer.BuildOptions{})
+	defer b.Close()
+
+	// Create a stub balancer which waits for the cluster_impl policy to be
+	// closed before sending a picker update (upon receipt of a subConn state
+	// change).
+	const childPolicyName = "stubBalancer-PickerUpdatedSynchronouslyOnConfigUpdate"
+	stub.Register(childPolicyName, stub.BalancerFuncs{
+		UpdateClientConnState: func(bd *stub.BalancerData, _ balancer.ClientConnState) error {
+			bd.ClientConn.UpdateState(balancer.State{
+				Picker: base.NewErrPicker(errors.New("dummy error picker")),
+			})
+			return nil
+		},
+	})
+
+	if err := b.UpdateClientConnState(balancer.ClientConnState{
+		ResolverState: xdsclient.SetClient(resolver.State{Addresses: testBackendAddrs}, xdsC),
+		BalancerConfig: &LBConfig{
+			Cluster:        testClusterName,
+			EDSServiceName: testServiceName,
+			ChildPolicy: &internalserviceconfig.BalancerConfig{
+				Name: childPolicyName,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("unexpected error from UpdateClientConnState: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
+	defer cancel()
+	select {
+	case <-clientConnUpdateDone:
+	case <-ctx.Done():
+		t.Fatal("Timed out waiting for client conn update to be completed.")
+	}
+}
+
 func assertString(f func() (string, error)) string {
 	s, err := f()
 	if err != nil {
