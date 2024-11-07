@@ -26,6 +26,7 @@ import (
 	rand "math/rand/v2"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc/balancer"
@@ -210,14 +211,14 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 	}
 	// Provide an opportunity for the first RPC to see the first service config
 	// provided by the resolver.
-	nameResolutionDelayed, err := cc.waitForResolvedAddrs(ctx)
-	if err != nil {
+	if err := cc.waitForResolvedAddrs(ctx); err != nil {
+		cc.nameResolutionDelayed.Store(true)
 		return nil, err
 	}
 	var mc serviceconfig.MethodConfig
 	var onCommit func()
 	var newStream = func(ctx context.Context, done func()) (iresolver.ClientStream, error) {
-		return newClientStreamWithParams(ctx, desc, cc, method, mc, onCommit, done, nameResolutionDelayed, opts...)
+		return newClientStreamWithParams(ctx, desc, cc, method, mc, onCommit, done, cc.nameResolutionDelayed, opts...)
 	}
 
 	rpcInfo := iresolver.RPCInfo{Context: ctx, Method: method}
@@ -255,7 +256,7 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 	return newStream(ctx, func() {})
 }
 
-func newClientStreamWithParams(ctx context.Context, desc *StreamDesc, cc *ClientConn, method string, mc serviceconfig.MethodConfig, onCommit, doneFunc func(), nameResolutionDelayed bool, opts ...CallOption) (_ iresolver.ClientStream, err error) {
+func newClientStreamWithParams(ctx context.Context, desc *StreamDesc, cc *ClientConn, method string, mc serviceconfig.MethodConfig, onCommit, doneFunc func(), nameResolutionDelayed atomic.Bool, opts ...CallOption) (_ iresolver.ClientStream, err error) {
 	c := defaultCallInfo()
 	if mc.WaitForReady != nil {
 		c.failFast = !*mc.WaitForReady
@@ -332,7 +333,7 @@ func newClientStreamWithParams(ctx context.Context, desc *StreamDesc, cc *Client
 		cancel:                cancel,
 		firstAttempt:          true,
 		onCommit:              onCommit,
-		nameResolutionDelayed: nameResolutionDelayed,
+		nameResolutionDelayed: nameResolutionDelayed.Load(),
 	}
 	if !cc.dopts.disableRetry {
 		cs.retryThrottler = cc.retryThrottler.Load().(*retryThrottler)
