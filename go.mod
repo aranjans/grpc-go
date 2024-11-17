@@ -1,6 +1,6 @@
 module google.golang.org/grpc
 
-go 1.22
+go 1.22.7
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0
@@ -26,7 +26,7 @@ require (
 require (
 	cel.dev/expr v0.16.2 // indirect
 	cloud.google.com/go/compute/metadata v0.5.2 // indirect
-	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.24.2 // indirect
+	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.24.3 // indirect
 	github.com/census-instrumentation/opencensus-proto v0.4.1 // indirect
 	github.com/envoyproxy/protoc-gen-validate v1.1.0 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
@@ -35,4 +35,5 @@ require (
 	go.opentelemetry.io/otel/trace v1.31.0 // indirect
 	golang.org/x/text v0.19.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20241015192408-796eee8c2d53 // indirect
+	google.golang.org/grpc/stats/opentelemetry v0.0.0-20241028142157-ada6787961b3 // indirect
 )

@@ -27,8 +27,8 @@ type attemptTraceSpan struct {
 
 // traceTagRPC populates context with a new span, and serializes information
 // about this span into gRPC Metadata.
-func (csh *clientStatsHandler) traceTagRPC(ctx context.Context, rti *stats.RPCTagInfo) (context.Context, *attemptTraceSpan) {
-	if csh.options.TraceOptions.TextMapPropagator == nil {
+func (h *clientStatsHandler) traceTagRPC(ctx context.Context, rti *stats.RPCTagInfo) (context.Context, *attemptTraceSpan) {
+	if h.options.TraceOptions.TextMapPropagator == nil {
 		return ctx, nil
 	}
 
@@ -49,8 +49,8 @@ func (csh *clientStatsHandler) traceTagRPC(ctx context.Context, rti *stats.RPCTa
 // traceTagRPC populates context with new span data, with a parent based on the
 // spanContext deserialized from context passed in (wire data in gRPC metadata)
 // if present.
-func (ssh *serverStatsHandler) traceTagRPC(ctx context.Context, rti *stats.RPCTagInfo) (context.Context, *attemptTraceSpan) {
-	if ssh.options.TraceOptions.TextMapPropagator == nil {
+func (h *serverStatsHandler) traceTagRPC(ctx context.Context, rti *stats.RPCTagInfo) (context.Context, *attemptTraceSpan) {
+	if h.options.TraceOptions.TextMapPropagator == nil {
 		return ctx, nil
 	}
 
