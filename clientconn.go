@@ -604,6 +604,9 @@ type ClientConn struct {
 	idlenessMgr         *idle.Manager
 	metricsRecorderList *stats.MetricsRecorderList
 
+	// Tracks if there was a delay in name resolution.
+	nameResolutionDelayed atomic.Bool
+
 	// The following provide their own synchronization, and therefore don't
 	// require cc.mu to be held to access them.
 	csMgr              *connectivityStateManager
@@ -671,8 +674,10 @@ func (cc *ClientConn) Connect() {
 }
 
 // waitForResolvedAddrs blocks until the resolver has provided addresses or the
-// context expires.  Returns nil unless the context expires first; otherwise
-// returns a status error based on the context.
+// context expires. It returns two values:
+//   - a boolean indicating if there was a name resolution delay.
+//   - an error which is nil unless the context expires first; otherwise returns
+//     a status error based on the context.
 func (cc *ClientConn) waitForResolvedAddrs(ctx context.Context) error {
 	// This is on the RPC path, so we use a fast path to avoid the
 	// more-expensive "select" below after the resolver has returned once.
