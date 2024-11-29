@@ -18,6 +18,7 @@ package opentelemetry
 
 import (
 	"context"
+	"go.opentelemetry.io/otel"
 	"sync/atomic"
 	"time"
 
@@ -64,6 +65,15 @@ func (h *serverStatsHandler) initializeMetrics() {
 	}
 	h.MetricsRecorder = rm
 	rm.registerMetrics(metrics, meter)
+}
+
+func (h *serverStatsHandler) initializeTracing() {
+	if !isTracingDisabled(h.options.TraceOptions) {
+		return
+	}
+
+	otel.SetTextMapPropagator(h.options.TraceOptions.TextMapPropagator)
+	otel.SetTracerProvider(h.options.TraceOptions.TracerProvider)
 }
 
 // attachLabelsTransportStream intercepts SetHeader and SendHeader calls of the
@@ -214,7 +224,9 @@ func (h *serverStatsHandler) HandleRPC(ctx context.Context, rs stats.RPCStats) {
 		logger.Error("ctx passed into server side stats handler metrics event handling has no server call data present")
 		return
 	}
-	h.processRPCData(ctx, rs, ri.ai)
+	if !isMetricsDisabled(h.options.MetricsOptions) {
+		h.processRPCData(ctx, rs, ri.ai)
+	}
 }
 
 func (h *serverStatsHandler) processRPCData(ctx context.Context, s stats.RPCStats, ai *attemptInfo) {
