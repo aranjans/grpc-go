@@ -213,13 +213,13 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 	// Provide an opportunity for the first RPC to see the first service config
 	// provided by the resolver.
 	if err := cc.waitForResolvedAddrs(ctx); err != nil {
+		cc.nameResolutionDelayed = true
 		return nil, err
 	}
-
 	var mc serviceconfig.MethodConfig
 	var onCommit func()
-	var newStream = func(ctx context.Context, done func()) (iresolver.ClientStream, error) {
-		return newClientStreamWithParams(ctx, desc, cc, method, mc, onCommit, done, opts...)
+	newStream := func(ctx context.Context, done func()) (iresolver.ClientStream, error) {
+		return newClientStreamWithParams(ctx, desc, cc, method, mc, onCommit, done, cc.nameResolutionDelayed, opts...)
 	}
 
 	rpcInfo := iresolver.RPCInfo{Context: ctx, Method: method}
@@ -257,7 +257,7 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 	return newStream(ctx, func() {})
 }
 
-func newClientStreamWithParams(ctx context.Context, desc *StreamDesc, cc *ClientConn, method string, mc serviceconfig.MethodConfig, onCommit, doneFunc func(), opts ...CallOption) (_ iresolver.ClientStream, err error) {
+func newClientStreamWithParams(ctx context.Context, desc *StreamDesc, cc *ClientConn, method string, mc serviceconfig.MethodConfig, onCommit, doneFunc func(), nameResolutionDelayed bool, opts ...CallOption) (_ iresolver.ClientStream, err error) {
 	c := defaultCallInfo()
 	if mc.WaitForReady != nil {
 		c.failFast = !*mc.WaitForReady
@@ -321,19 +321,20 @@ func newClientStreamWithParams(ctx context.Context, desc *StreamDesc, cc *Client
 	}
 
 	cs := &clientStream{
-		callHdr:      callHdr,
-		ctx:          ctx,
-		methodConfig: &mc,
-		opts:         opts,
-		callInfo:     c,
-		cc:           cc,
-		desc:         desc,
-		codec:        c.codec,
-		cp:           cp,
-		comp:         comp,
-		cancel:       cancel,
-		firstAttempt: true,
-		onCommit:     onCommit,
+		callHdr:               callHdr,
+		ctx:                   ctx,
+		methodConfig:          &mc,
+		opts:                  opts,
+		callInfo:              c,
+		cc:                    cc,
+		desc:                  desc,
+		codec:                 c.codec,
+		cp:                    cp,
+		comp:                  comp,
+		cancel:                cancel,
+		firstAttempt:          true,
+		onCommit:              onCommit,
+		nameResolutionDelayed: nameResolutionDelayed,
 	}
 	if !cc.dopts.disableRetry {
 		cs.retryThrottler = cc.retryThrottler.Load().(*retryThrottler)
@@ -417,7 +418,7 @@ func (cs *clientStream) newAttemptLocked(isTransparent bool) (*csAttempt, error)
 	var beginTime time.Time
 	shs := cs.cc.dopts.copts.StatsHandlers
 	for _, sh := range shs {
-		ctx = sh.TagRPC(ctx, &stats.RPCTagInfo{FullMethodName: method, FailFast: cs.callInfo.failFast})
+		ctx = sh.TagRPC(ctx, &stats.RPCTagInfo{FullMethodName: method, FailFast: cs.callInfo.failFast, NameResolutionDelay: cs.nameResolutionDelayed})
 		beginTime = time.Now()
 		begin := &stats.Begin{
 			Client:                    true,
@@ -554,6 +555,8 @@ type clientStream struct {
 	// It's only read and used by Recv() and Header(), so it doesn't need to be
 	// synchronized.
 	serverHeaderBinlogged bool
+
+	nameResolutionDelayed bool
 
 	mu                      sync.Mutex
 	firstAttempt            bool // if true, transparent retry is valid
@@ -708,11 +711,10 @@ func (a *csAttempt) shouldRetry(err error) (bool, error) {
 		cs.numRetriesSincePushback = 0
 	} else {
 		fact := math.Pow(rp.BackoffMultiplier, float64(cs.numRetriesSincePushback))
-		cur := float64(rp.InitialBackoff) * fact
-		if max := float64(rp.MaxBackoff); cur > max {
-			cur = max
-		}
-		dur = time.Duration(rand.Int64N(int64(cur)))
+		cur := min(float64(rp.InitialBackoff)*fact, float64(rp.MaxBackoff))
+		// Apply jitter by multiplying with a random factor between 0.8 and 1.2
+		cur *= 0.8 + 0.4*rand.Float64()
+		dur = time.Duration(int64(cur))
 		cs.numRetriesSincePushback++
 	}
 
@@ -993,7 +995,7 @@ func (cs *clientStream) CloseSend() error {
 	}
 	cs.sentLast = true
 	op := func(a *csAttempt) error {
-		a.t.Write(a.s, nil, nil, &transport.Options{Last: true})
+		a.s.Write(nil, nil, &transport.WriteOptions{Last: true})
 		// Always return nil; io.EOF is the only error that might make sense
 		// instead, but there is no need to signal the client to call RecvMsg
 		// as the only use left for the stream after CloseSend is to call
@@ -1085,7 +1087,7 @@ func (a *csAttempt) sendMsg(m any, hdr []byte, payld mem.BufferSlice, dataLength
 		}
 		a.mu.Unlock()
 	}
-	if err := a.t.Write(a.s, hdr, payld, &transport.Options{Last: !cs.desc.ClientStreams}); err != nil {
+	if err := a.s.Write(hdr, payld, &transport.WriteOptions{Last: !cs.desc.ClientStreams}); err != nil {
 		if !cs.desc.ClientStreams {
 			// For non-client-streaming RPCs, we return nil instead of EOF on error
 			// because the generated code requires it.  finish is not called; RecvMsg()
@@ -1098,9 +1100,6 @@ func (a *csAttempt) sendMsg(m any, hdr []byte, payld mem.BufferSlice, dataLength
 		for _, sh := range a.statsHandlers {
 			sh.HandleRPC(a.ctx, outPayload(true, m, dataLength, payloadLength, time.Now()))
 		}
-	}
-	if channelz.IsOn() {
-		a.t.IncrMsgSent()
 	}
 	return nil
 }
@@ -1155,9 +1154,6 @@ func (a *csAttempt) recvMsg(m any, payInfo *payloadInfo) (err error) {
 			Length:           payInfo.uncompressedBytes.Len(),
 		})
 	}
-	if channelz.IsOn() {
-		a.t.IncrMsgRecv()
-	}
 	if cs.desc.ServerStreams {
 		// Subsequent messages should be received by subsequent RecvMsg calls.
 		return nil
@@ -1185,7 +1181,7 @@ func (a *csAttempt) finish(err error) {
 	}
 	var tr metadata.MD
 	if a.s != nil {
-		a.t.CloseStream(a.s, err)
+		a.s.Close(err)
 		tr = a.s.Trailer()
 	}
 
@@ -1382,7 +1378,7 @@ func (as *addrConnStream) CloseSend() error {
 	}
 	as.sentLast = true
 
-	as.t.Write(as.s, nil, nil, &transport.Options{Last: true})
+	as.s.Write(nil, nil, &transport.WriteOptions{Last: true})
 	// Always return nil; io.EOF is the only error that might make sense
 	// instead, but there is no need to signal the client to call RecvMsg
 	// as the only use left for the stream after CloseSend is to call
@@ -1432,7 +1428,7 @@ func (as *addrConnStream) SendMsg(m any) (err error) {
 		return status.Errorf(codes.ResourceExhausted, "trying to send message larger than max (%d vs. %d)", payload.Len(), *as.callInfo.maxSendMessageSize)
 	}
 
-	if err := as.t.Write(as.s, hdr, payload, &transport.Options{Last: !as.desc.ClientStreams}); err != nil {
+	if err := as.s.Write(hdr, payload, &transport.WriteOptions{Last: !as.desc.ClientStreams}); err != nil {
 		if !as.desc.ClientStreams {
 			// For non-client-streaming RPCs, we return nil instead of EOF on error
 			// because the generated code requires it.  finish is not called; RecvMsg()
@@ -1442,9 +1438,6 @@ func (as *addrConnStream) SendMsg(m any) (err error) {
 		return io.EOF
 	}
 
-	if channelz.IsOn() {
-		as.t.IncrMsgSent()
-	}
 	return nil
 }
 
@@ -1482,9 +1475,6 @@ func (as *addrConnStream) RecvMsg(m any) (err error) {
 		return toRPCErr(err)
 	}
 
-	if channelz.IsOn() {
-		as.t.IncrMsgRecv()
-	}
 	if as.desc.ServerStreams {
 		// Subsequent messages should be received by subsequent RecvMsg calls.
 		return nil
@@ -1512,7 +1502,7 @@ func (as *addrConnStream) finish(err error) {
 		err = nil
 	}
 	if as.s != nil {
-		as.t.CloseStream(as.s, err)
+		as.s.Close(err)
 	}
 
 	if err != nil {
@@ -1579,7 +1569,6 @@ type ServerStream interface {
 // serverStream implements a server side Stream.
 type serverStream struct {
 	ctx   context.Context
-	t     transport.ServerTransport
 	s     *transport.ServerStream
 	p     *parser
 	codec baseCodec
@@ -1630,7 +1619,7 @@ func (ss *serverStream) SendHeader(md metadata.MD) error {
 		return status.Error(codes.Internal, err.Error())
 	}
 
-	err = ss.t.WriteHeader(ss.s, md)
+	err = ss.s.SendHeader(md)
 	if len(ss.binlogs) != 0 && !ss.serverHeaderBinlogged {
 		h, _ := ss.s.Header()
 		sh := &binarylog.ServerHeader{
@@ -1670,16 +1659,13 @@ func (ss *serverStream) SendMsg(m any) (err error) {
 		}
 		if err != nil && err != io.EOF {
 			st, _ := status.FromError(toRPCErr(err))
-			ss.t.WriteStatus(ss.s, st)
+			ss.s.WriteStatus(st)
 			// Non-user specified status was sent out. This should be an error
 			// case (as a server side Cancel maybe).
 			//
 			// This is not handled specifically now. User will return a final
 			// status from the service handler, we will log that error instead.
 			// This behavior is similar to an interceptor.
-		}
-		if channelz.IsOn() && err == nil {
-			ss.t.IncrMsgSent()
 		}
 	}()
 
@@ -1712,7 +1698,7 @@ func (ss *serverStream) SendMsg(m any) (err error) {
 	if payloadLen > ss.maxSendMessageSize {
 		return status.Errorf(codes.ResourceExhausted, "trying to send message larger than max (%d vs. %d)", payloadLen, ss.maxSendMessageSize)
 	}
-	if err := ss.t.Write(ss.s, hdr, payload, &transport.Options{Last: false}); err != nil {
+	if err := ss.s.Write(hdr, payload, &transport.WriteOptions{Last: false}); err != nil {
 		return toRPCErr(err)
 	}
 
@@ -1758,16 +1744,13 @@ func (ss *serverStream) RecvMsg(m any) (err error) {
 		}
 		if err != nil && err != io.EOF {
 			st, _ := status.FromError(toRPCErr(err))
-			ss.t.WriteStatus(ss.s, st)
+			ss.s.WriteStatus(st)
 			// Non-user specified status was sent out. This should be an error
 			// case (as a server side Cancel maybe).
 			//
 			// This is not handled specifically now. User will return a final
 			// status from the service handler, we will log that error instead.
 			// This behavior is similar to an interceptor.
-		}
-		if channelz.IsOn() && err == nil {
-			ss.t.IncrMsgRecv()
 		}
 	}()
 	var payInfo *payloadInfo
