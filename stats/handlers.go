@@ -21,7 +21,6 @@ package stats
 import (
 	"context"
 	"net"
-	"time"
 )
 
 // ConnTagInfo defines the relevant information needed by connection context tagger.
@@ -40,7 +39,7 @@ type RPCTagInfo struct {
 	// This field is only valid on client side, it's always false on server side.
 	FailFast bool
 	// NameResolutionDelay indicates the time name resolution was delayed for.
-	NameResolutionDelay time.Duration
+	NameResolutionDelay bool
 }
 
 // Handler defines the interface for the related stats handling (e.g., RPCs, connections).

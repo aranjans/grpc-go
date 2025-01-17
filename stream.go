@@ -21,6 +21,7 @@ package grpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	rand "math/rand/v2"
@@ -320,8 +321,11 @@ func newClientStreamWithParams(ctx context.Context, desc *StreamDesc, cc *Client
 		callHdr.Creds = c.creds
 	}
 
-	// Acquire mutex to access cc.nameResolutionDelay.
-	cc.mu.Lock()
+	var nameResDelay bool
+	if ctx.Value(NameResolutionDelayed{}) != nil {
+		nameResDelay = true
+	}
+	fmt.Println("Insdie new client with params, name resolution delayed is ", nameResDelay)
 	cs := &clientStream{
 		callHdr:             callHdr,
 		ctx:                 ctx,
@@ -336,9 +340,8 @@ func newClientStreamWithParams(ctx context.Context, desc *StreamDesc, cc *Client
 		cancel:              cancel,
 		firstAttempt:        true,
 		onCommit:            onCommit,
-		nameResolutionDelay: cc.nameResolutionDelay,
+		nameResolutionDelay: nameResDelay,
 	}
-	cc.mu.Unlock()
 	if !cc.dopts.disableRetry {
 		cs.retryThrottler = cc.retryThrottler.Load().(*retryThrottler)
 	}
@@ -415,6 +418,8 @@ func (cs *clientStream) newAttemptLocked(isTransparent bool) (*csAttempt, error)
 	if err := cs.cc.ctx.Err(); err != nil {
 		return nil, ErrClientConnClosing
 	}
+
+	fmt.Println("Inside newAttemptLocked: name resolution delay: ", cs.nameResolutionDelay)
 
 	ctx := newContextWithRPCInfo(cs.ctx, cs.callInfo.failFast, cs.callInfo.codec, cs.cp, cs.comp)
 	method := cs.callHdr.Method
@@ -536,7 +541,7 @@ type clientStream struct {
 	cc       *ClientConn
 	desc     *StreamDesc
 
-	nameResolutionDelay time.Duration
+	nameResolutionDelay bool
 
 	codec baseCodec
 	cp    Compressor

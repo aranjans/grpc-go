@@ -36,7 +36,6 @@ import (
 )
 
 type clientStatsHandler struct {
-	statsHandler
 	estats.MetricsRecorder
 	options       Options
 	clientMetrics clientMetrics
@@ -89,7 +88,7 @@ func (h *clientStatsHandler) unaryInterceptor(ctx context.Context, method string
 	}
 
 	startTime := time.Now()
-	var span *trace.Span
+	var span trace.Span
 	if h.options.isTracingEnabled() {
 		ctx, span = h.createCallTraceSpan(ctx, method)
 	}
@@ -127,7 +126,7 @@ func (h *clientStatsHandler) streamInterceptor(ctx context.Context, desc *grpc.S
 	}
 
 	startTime := time.Now()
-	var span *trace.Span
+	var span trace.Span
 	if h.options.isTracingEnabled() {
 		ctx, span = h.createCallTraceSpan(ctx, method)
 	}
@@ -139,15 +138,15 @@ func (h *clientStatsHandler) streamInterceptor(ctx context.Context, desc *grpc.S
 }
 
 // perCallTracesAndMetrics records per call trace spans and metrics.
-func (h *clientStatsHandler) perCallTracesAndMetrics(ctx context.Context, err error, startTime time.Time, ci *callInfo, ts *trace.Span) {
-	if h.options.isTracingEnabled() && ts != nil {
+func (h *clientStatsHandler) perCallTracesAndMetrics(ctx context.Context, err error, startTime time.Time, ci *callInfo, ts trace.Span) {
+	if h.options.isTracingEnabled() {
 		s := status.Convert(err)
 		if s.Code() == grpccodes.OK {
-			(*ts).SetStatus(otelcodes.Ok, s.Message())
+			ts.SetStatus(otelcodes.Ok, s.Message())
 		} else {
-			(*ts).SetStatus(otelcodes.Error, s.Message())
+			ts.SetStatus(otelcodes.Error, s.Message())
 		}
-		(*ts).End()
+		ts.End()
 	}
 	if h.options.isMetricsEnabled() {
 		callLatency := float64(time.Since(startTime)) / float64(time.Second)
@@ -189,14 +188,12 @@ func (h *clientStatsHandler) TagRPC(ctx context.Context, info *stats.RPCTagInfo)
 	ai := &attemptInfo{
 		startTime: time.Now(),
 		xdsLabels: labels.TelemetryLabels,
-		method:    info.FullMethodName,
+		method:    removeLeadingSlash(info.FullMethodName),
 	}
 	if h.options.isTracingEnabled() {
-		if info.NameResolutionDelay > 0 {
+		if info.NameResolutionDelay {
 			callSpan := trace.SpanFromContext(ctx)
-			callSpan.AddEvent("Delayed name resolution complete", trace.WithAttributes(
-				otelattribute.Int64("duration(in ns)", info.NameResolutionDelay.Nanoseconds()),
-			))
+			callSpan.AddEvent("Delayed name resolution complete")
 			ctx = trace.ContextWithSpan(ctx, callSpan)
 		}
 		ctx, ai = h.traceTagRPC(ctx, info, ai)
@@ -216,7 +213,7 @@ func (h *clientStatsHandler) HandleRPC(ctx context.Context, rs stats.RPCStats) {
 		h.processRPCEvent(ctx, rs, ri.ai)
 	}
 	if h.options.isTracingEnabled() {
-		h.populateSpan(ctx, rs, ri.ai)
+		populateSpan(rs, ri.ai)
 	}
 }
 

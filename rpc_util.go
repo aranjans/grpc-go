@@ -1026,6 +1026,8 @@ func setCallInfoCodec(c *callInfo) error {
 	return nil
 }
 
+type NameResolutionDelayed struct{}
+
 // The SupportPackageIsVersion variables are referenced from generated protocol
 // buffer files to ensure compatibility with the gRPC version used.  The latest
 // support package version is 9.

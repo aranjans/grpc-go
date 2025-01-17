@@ -19,8 +19,8 @@ package opentelemetry_test
 import (
 	"context"
 	"fmt"
+	experimental2 "google.golang.org/grpc/stats/opentelemetry/experimental"
 	"io"
-	"net"
 	"testing"
 	"time"
 
@@ -47,7 +47,6 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/encoding/gzip"
 	experimental "google.golang.org/grpc/experimental/opentelemetry"
@@ -60,10 +59,7 @@ import (
 	testgrpc "google.golang.org/grpc/interop/grpc_testing"
 	testpb "google.golang.org/grpc/interop/grpc_testing"
 	"google.golang.org/grpc/orca"
-	"google.golang.org/grpc/resolver"
-	"google.golang.org/grpc/resolver/manual"
 	"google.golang.org/grpc/stats/opentelemetry"
-	expstats "google.golang.org/grpc/stats/opentelemetry/experimental"
 	"google.golang.org/grpc/stats/opentelemetry/internal/testutils"
 )
 
@@ -104,7 +100,7 @@ func defaultTraceOptions(_ *testing.T) (*experimental.TraceOptions, *tracetest.I
 	spanExporter := tracetest.NewInMemoryExporter()
 	spanProcessor := trace.NewSimpleSpanProcessor(spanExporter)
 	tracerProvider := trace.NewTracerProvider(trace.WithSpanProcessor(spanProcessor))
-	textMapPropagator := propagation.NewCompositeTextMapPropagator(expstats.GRPCTraceBinPropagator{})
+	textMapPropagator := propagation.NewCompositeTextMapPropagator(experimental2.GRPCTraceBinPropagator{})
 	otel.SetTextMapPropagator(textMapPropagator)
 	otel.SetTracerProvider(tracerProvider)
 	traceOptions := &experimental.TraceOptions{
@@ -809,16 +805,7 @@ func (s) TestMetricsAndTracesOptionEnabled(t *testing.T) {
 			name:       "grpc.testing.TestService.UnaryCall",
 			spanKind:   oteltrace.SpanKindClient.String(),
 			attributes: []attribute.KeyValue{},
-			events: []trace.Event{
-				{
-					Name: "Delayed name resolution complete",
-					Attributes: []attribute.KeyValue{
-						{
-							Key: "duration(in ns)",
-						},
-					},
-				},
-			},
+			events:     []trace.Event{},
 		},
 		{
 			name:     "grpc.testing.TestService.FullDuplexCall",
@@ -847,16 +834,7 @@ func (s) TestMetricsAndTracesOptionEnabled(t *testing.T) {
 			name:       "grpc.testing.TestService.FullDuplexCall",
 			spanKind:   oteltrace.SpanKindClient.String(),
 			attributes: []attribute.KeyValue{},
-			events: []trace.Event{
-				{
-					Name: "Delayed name resolution complete",
-					Attributes: []attribute.KeyValue{
-						{
-							Key: "duration(in ns)",
-						},
-					},
-				},
-			},
+			events:     []trace.Event{},
 		},
 		{
 			name:     "Attempt.grpc.testing.TestService.FullDuplexCall",
@@ -936,6 +914,9 @@ func (s) TestMetricsAndTracesOptionEnabled(t *testing.T) {
 			for idx, att := range event.Attributes {
 				if got, want := att.Key, wantSI[index].events[eventIdx].Attributes[idx].Key; got != want {
 					t.Errorf("Got attribute key for span name %q with event name %v, as %v, want %v", span.Name, event.Name, got, want)
+				}
+				if got, want := att.Value, wantSI[index].events[eventIdx].Attributes[idx].Value; got != want {
+					t.Errorf("Got attribute value for span name %v with event name %v, as %v, want %v", span.Name, event.Name, got, want)
 				}
 			}
 		}
@@ -1109,16 +1090,7 @@ func (s) TestSpan(t *testing.T) {
 			name:       "grpc.testing.TestService.UnaryCall",
 			spanKind:   oteltrace.SpanKindClient.String(),
 			attributes: []attribute.KeyValue{},
-			events: []trace.Event{
-				{
-					Name: "Delayed name resolution complete",
-					Attributes: []attribute.KeyValue{
-						{
-							Key: "duration(in ns)",
-						},
-					},
-				},
-			},
+			events:     []trace.Event{},
 		},
 		{
 			name:     "grpc.testing.TestService.FullDuplexCall",
@@ -1147,16 +1119,7 @@ func (s) TestSpan(t *testing.T) {
 			name:       "grpc.testing.TestService.FullDuplexCall",
 			spanKind:   oteltrace.SpanKindClient.String(),
 			attributes: []attribute.KeyValue{},
-			events: []trace.Event{
-				{
-					Name: "Delayed name resolution complete",
-					Attributes: []attribute.KeyValue{
-						{
-							Key: "duration(in ns)",
-						},
-					},
-				},
-			},
+			events:     []trace.Event{},
 		},
 		{
 			name:     "Attempt.grpc.testing.TestService.FullDuplexCall",
@@ -1236,6 +1199,9 @@ func (s) TestSpan(t *testing.T) {
 			for idx, att := range event.Attributes {
 				if got, want := att.Key, wantSI[index].events[eventIdx].Attributes[idx].Key; got != want {
 					t.Errorf("Got attribute key for span name %q with event name %v, as %v, want %v", span.Name, event.Name, got, want)
+				}
+				if got, want := att.Value, wantSI[index].events[eventIdx].Attributes[idx].Value; got != want {
+					t.Errorf("Got attribute value for span name %v with event name %v, as %v, want %v", span.Name, event.Name, got, want)
 				}
 			}
 		}
@@ -1410,16 +1376,7 @@ func (s) TestSpan_WithW3CContextPropagator(t *testing.T) {
 			name:       "grpc.testing.TestService.UnaryCall",
 			spanKind:   oteltrace.SpanKindClient.String(),
 			attributes: []attribute.KeyValue{},
-			events: []trace.Event{
-				{
-					Name: "Delayed name resolution complete",
-					Attributes: []attribute.KeyValue{
-						{
-							Key: "duration(in ns)",
-						},
-					},
-				},
-			},
+			events:     []trace.Event{},
 		},
 		{
 			name:     "grpc.testing.TestService.FullDuplexCall",
@@ -1448,16 +1405,7 @@ func (s) TestSpan_WithW3CContextPropagator(t *testing.T) {
 			name:       "grpc.testing.TestService.FullDuplexCall",
 			spanKind:   oteltrace.SpanKindClient.String(),
 			attributes: []attribute.KeyValue{},
-			events: []trace.Event{
-				{
-					Name: "Delayed name resolution complete",
-					Attributes: []attribute.KeyValue{
-						{
-							Key: "duration(in ns)",
-						},
-					},
-				},
-			},
+			events:     []trace.Event{},
 		},
 		{
 			name:     "Attempt.grpc.testing.TestService.FullDuplexCall",
@@ -1537,6 +1485,9 @@ func (s) TestSpan_WithW3CContextPropagator(t *testing.T) {
 				if got, want := att.Key, wantSI[index].events[eventIdx].Attributes[idx].Key; got != want {
 					t.Errorf("Got attribute key for span name %q with event name %v, as %v, want %v", span.Name, event.Name, got, want)
 				}
+				if got, want := att.Value, wantSI[index].events[eventIdx].Attributes[idx].Value; got != want {
+					t.Errorf("Got attribute value for span name %v with event name %v, as %v, want %v", span.Name, event.Name, got, want)
+				}
 			}
 		}
 	}
@@ -1583,87 +1534,5 @@ func (s) TestMetricsAndTracesDisabled(t *testing.T) {
 	stream.CloseSend()
 	if _, err = stream.Recv(); err != io.EOF {
 		t.Fatalf("stream.Recv received an unexpected error: %v, expected an EOF error", err)
-	}
-}
-
-// TestEventForNameResolutionDelay verifies that an event is emitted for name
-// resolution delay during RPC calls.
-func (s) TestEventForNameResolutionDelay(t *testing.T) {
-	mo, _ := defaultMetricsOptions(t, nil)
-	// Using defaultTraceOptions to set up OpenTelemetry with an in-memory exporter
-	to, spanExporter := defaultTraceOptions(t)
-	// Set the W3CContextPropagator as part of TracingOptions.
-	to.TextMapPropagator = propagation.NewCompositeTextMapPropagator(propagation.TraceContext{})
-	otelOptions := opentelemetry.Options{
-		MetricsOptions: *mo,
-		TraceOptions:   *to,
-	}
-
-	lis1, err := net.Listen("tcp", "localhost:0")
-	if err != nil {
-		t.Fatalf("Error while listening. Err: %v", err)
-	}
-	s1 := grpc.NewServer(opentelemetry.ServerOption(otelOptions))
-	defer s1.Stop()
-
-	// Start the server with OpenTelemetry options
-	ts := &stubserver.StubServer{
-		UnaryCallF: func(_ context.Context, in *testpb.SimpleRequest) (*testpb.SimpleResponse, error) {
-			return &testpb.SimpleResponse{Payload: &testpb.Payload{
-				Body: make([]byte, len(in.GetPayload().GetBody())),
-			}}, nil
-		},
-		FullDuplexCallF: func(stream testgrpc.TestService_FullDuplexCallServer) error {
-			for {
-				_, err := stream.Recv()
-				if err == io.EOF {
-					return nil
-				}
-			}
-		},
-	}
-
-	testgrpc.RegisterTestServiceServer(s1, ts)
-	go s1.Serve(lis1)
-
-	ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
-	defer cancel()
-	r := manual.NewBuilderWithScheme("whatever")
-	r.InitialState(resolver.State{Addresses: []resolver.Address{
-		{Addr: lis1.Addr().String()},
-	}})
-	cc, err := grpc.DialContext(ctx, r.Scheme()+":///", grpc.WithResolvers(r), grpc.WithTransportCredentials(insecure.NewCredentials()), opentelemetry.DialOption(otelOptions))
-	if err != nil {
-		t.Fatalf("Error creating client: %v", err)
-	}
-	defer cc.Close()
-
-	client := testgrpc.NewTestServiceClient(cc)
-
-	t.Log("Waiting for the ClientConn to enter READY state.")
-	itestutils.AwaitState(ctx, t, cc, connectivity.Ready)
-
-	t.Log("Creating unary RPC to server.")
-	_, err = client.UnaryCall(ctx, &testpb.SimpleRequest{Payload: &testpb.Payload{
-		Body: make([]byte, 10000),
-	}})
-	if err != nil {
-		t.Fatalf("UnaryCall(_) = _, %v; want _, nil", err)
-	}
-
-	// Get the spans from the exporter
-	spans := spanExporter.GetSpans()
-	if got, want := len(spans), 3; got != want {
-		t.Fatalf("Got %d spans, want %d", got, want)
-	}
-
-	// Verify that events length for client should be 1, which will be
-	// of name resolution event.
-	if got, want := len(spans[2].Events), 1; got != want {
-		t.Fatalf("Got %d spans, want %d", got, want)
-	}
-
-	if got, want := spans[2].Events[0].Name, "Delayed name resolution complete"; got != want {
-		t.Fatalf("Got %s spans, want %s", got, want)
 	}
 }
